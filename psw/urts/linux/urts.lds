@@ -1,5 +1,8 @@
 {
     global:
+        sgx_get_aep;
+        sgx_set_aep;
+        sgx_get_tcs;
         sgx_create_enclave;
         sgx_create_enclave_ex;
         sgx_destroy_enclave;

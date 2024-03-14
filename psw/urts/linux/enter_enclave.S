@@ -32,6 +32,29 @@
 
 #include "enter_enclave.h"
 
+/* XXX runtime reconfigurable indirect Asynchronous Exit Pointer (AEP)
+ * (ld complains when initializing __default_async_exit_pointer here, so we have
+ * to do it at runtime, when EENTERing, below in .Ldo_eenter.
+ */
+    .data
+g_aep_pointer:
+    .word 0x0
+    .word 0x0
+    .word 0x0
+    .word 0x0
+
+/* XXX HACK: SGX stores TCS address in rbx on interrupt, but this value is
+ * somehow not properly stored in Linux's pt_regs struct available to our
+ * driver's interrupt handler. We therefore store TCS address here in the
+ * untrusted runtime, so as to be able to explicitly communicate TCS to our
+ * driver...
+ */
+    .data
+g_tcs:
+    .word 0x0
+    .word 0x0
+    .word 0x0
+    .word 0x0
 
 /* int __morestack(const tcs_t *tcs, const int fn, const void *ocall_table, const void *ms, CTrustThread *trust_thread); */
 .file "enter_enclave.S"
@@ -98,9 +121,17 @@ EENTER_PROLOG
     je   1f
     vzeroupper
 1:
-    mov frame_arg0, %xbx                        /* tcs addr */
-    lea_pic .Lasync_exit_pointer, %xcx          /* aep addr */
-    mov $SE_EENTER, %xax                        /* EENTER leaf */
+    mov         frame_arg0, %xbx                /* tcs addr */
+    lea_pic     g_tcs, %xax
+    mov         %xbx, (%xax)
+    /* fetch AEP; init when NULL */
+    lea_pic     g_aep_pointer, %xax
+    mov         (%xax), %xcx                    /* aep addr */
+    cmp         $0x0, %xcx
+    jnz 1f
+    lea_pic     __default_async_exit_pointer, %xcx
+    mov         %xcx, (%xax)
+1:  mov         $SE_EENTER, %xax                /* EENTER leaf */
 
 .Leenter_inst:
     ENCLU
@@ -158,18 +189,29 @@ EENTER_PROLOG
 .Loret:
     EENTER_EPILOG
 
-.Lasync_exit_pointer:
+__default_async_exit_pointer:
     ENCLU
     ud2
     _CET_ENDBR
 
 .size __morestack, .-__morestack
 
-
 DECLARE_GLOBAL_FUNC get_aep
-    lea_pic     .Lasync_exit_pointer, %xax
+    lea_pic     g_aep_pointer, %xax
+    mov         (%xax), %xax
+    ret
+ 
+DECLARE_GLOBAL_FUNC set_aep
+    lea_pic     g_aep_pointer, %xax
+    mov         naked_arg0, %xbx
+    mov         %xbx, (%xax)
     ret
 
+DECLARE_GLOBAL_FUNC get_tcs
+    lea_pic     g_tcs, %xax
+    mov         (%xax), %xax
+    ret
+ 
 DECLARE_GLOBAL_FUNC get_eenterp
     lea_pic .Leenter_inst, %xax
     ret

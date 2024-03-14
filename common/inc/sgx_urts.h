@@ -76,6 +76,11 @@ typedef struct _sgx_kss_config_t
 extern "C" {
 #endif
 
+//XXX
+void* SGXAPI sgx_get_aep(void);
+void  SGXAPI sgx_set_aep(void *aep);
+void* SGXAPI sgx_get_tcs(void);
+
 typedef uint8_t sgx_launch_token_t[1024];
 
 /* Convenient macro to be passed to sgx_create_enclave(). */

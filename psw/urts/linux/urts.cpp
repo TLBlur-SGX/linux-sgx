@@ -40,6 +40,26 @@
 
 #include "urts_com.h"
 
+//XXX
+extern "C" void *get_aep();
+extern "C" void  set_aep(void *aep);
+extern "C" void *get_tcs();
+
+extern "C" void* sgx_get_aep(void)
+{
+    return get_aep();
+}
+
+extern "C" void* sgx_get_tcs(void)
+{
+    return get_tcs();
+}
+
+extern "C" void sgx_set_aep(void *aep)
+{
+    set_aep(aep);
+}
+
 static bool inline _check_ex_params_(const uint32_t ex_features, const void* ex_features_p[32])
 {
     //update last feature index if it fails here
