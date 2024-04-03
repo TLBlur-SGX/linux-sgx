@@ -92,6 +92,10 @@ sgx_status_t SGXAPI sgx_register_aex_handler(sgx_aex_mitigation_node_t *aex_node
  */
 sgx_status_t SGXAPI sgx_unregister_aex_handler(sgx_aex_mitigation_fn_t handler);
 
+sgx_status_t tlblur_enable(uint64_t vtlb_size);
+
+sgx_status_t tlblur_disable();
+
 #ifdef __cplusplus
 }
 #endif

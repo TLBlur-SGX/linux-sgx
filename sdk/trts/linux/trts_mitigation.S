@@ -319,20 +319,54 @@ __ct_mitigation_begin:
 .ct_check_write:
     movl    $63, %ecx
     shlx    %rcx, %rsi, %rcx # Bit 0 in %rsi indicates whether data_tickle_address can be written
-    jrcxz   .ct_clear_low_bits_of_rdx
+    jrcxz   .ct_check_execute
     lea     -1(%rsi), %rsi   # Clear bit 0 in %rsi
     movb    (%rdx), %al
     movb    %al, (%rdx)      # Will fault if the data page is not writable
+
+.ct_check_execute:
+    call    *%rdi
+
+# prefetch TLBlur _writable_ entries
+    mov g_vtlb_w_size(%rip), %rcx
+.ct_prefetch_tlblur_w:
+    jrcxz   .ct_prefetch_tlblur_x
+    lea     g_tlblur_prefetch_w(%rip), %rdi
+    mov     -8(%rdi, %rcx, 8), %rax     # include first elem and stay in bounds
+    movb    (%rax), %dl
+    movb    %dl, (%rax)
+    lea     -1(%rcx), %rcx              # lea does not affect flags
+    jmp     .ct_prefetch_tlblur_w
+
+# prefetch TLBlur _executable_ entries
+.ct_prefetch_tlblur_x:
+    lea     g_tlblur_prefetch_x(%rip), %rdi
+    mov     g_vtlb_x_size(%rip), %rcx
+.ct_prefetch_tlblur_x_loop:
+    jrcxz   .ct_prefetch_tlblur_r
+    mov     -8(%rdi, %rcx, 8), %rax     # include first elem and stay in bounds
+    call    *%rax
+    lea     -1(%rcx), %rcx              # lea does not affect flags
+    jmp     .ct_prefetch_tlblur_x_loop
+
+# prefetch TLBlur _readable_ entries
+.ct_prefetch_tlblur_r:
+    lea     g_tlblur_prefetch_r(%rip), %rdi
+    mov     g_vtlb_size(%rip), %rcx
+.ct_prefetch_tlblur_r_loop:
+    jrcxz   .ct_clear_low_bits_of_rdx
+    mov     -8(%rdi, %rcx, 8), %rax     # include first elem and stay in bounds
+    mov     (%rax), %rax
+    lea     -1(%rcx), %rcx              # lea does not affect flags
+    jmp     .ct_prefetch_tlblur_r_loop
 
 .ct_clear_low_bits_of_rdx:
     movl    $12, %ecx
     shrx    %rcx, %rdx, %rdx
     shlx    %rcx, %rdx, %rdx
 
-.ct_check_execute:
-    call    *%rdi
-
 # Load all working set cache lines and warm the TLB entries
+.ct_prefetch_sgxstep:
     mov     $0x1000, %ecx
 .align 0x10
 .ct_warm_caches_and_tlbs:

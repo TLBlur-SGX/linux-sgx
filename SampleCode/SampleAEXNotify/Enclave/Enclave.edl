@@ -39,6 +39,7 @@ enclave {
          * the number of async enclave exits during this process.
          */
         public void count_powers_of_two_with_aex(uint64_t low, uint64_t high, [out] uint32_t* count, [out] uint64_t* aex_count);
+        public void ecall_get_addr([user_check] uint64_t *page_a, [user_check] uint64_t *page_b, [user_check] uint64_t *page_f);
     };
 
 
@@ -49,6 +50,7 @@ enclave {
      */
     untrusted {
         void ocall_print_string([in, string] const char *str);
+        void ocall_print_int(uint64_t i);
     };
 
 };

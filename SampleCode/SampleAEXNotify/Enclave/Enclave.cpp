@@ -73,6 +73,12 @@ static void my_aex_notify_handler(const sgx_exception_info_t *info, const void *
    g_aex_count++;
 }
 
+extern "C" void tlblur_tlb_update(void *addr);
+extern "C" void my_fun(void);
+extern "C" void my_fun_noc3(void);
+
+extern uint8_t page_a, page_b, page_c, page_d;
+
 //  Count the number of powers of two between [low, high].
 //  Also count the number of times our AEX-Notify handler was called.
 //  If the function runs long enough, normal OS preemptive multitasking 
@@ -85,10 +91,25 @@ void count_powers_of_two_with_aex(uint64_t low, uint64_t high, uint32_t* count, 
     if(!aex_count) return;
 
     g_aex_count = 0;
+
+    ocall_print_string("[encl] page_a/b/c/d addresses: ");
+    ocall_print_int((uint64_t) &page_a);
+    ocall_print_int((uint64_t) &page_b);
+    ocall_print_int((uint64_t) &page_c);
+    ocall_print_int((uint64_t) &page_d);
+    ocall_print_string("\n");
    
     const char* args = NULL; 
     sgx_aex_mitigation_node_t node;
     
+    tlblur_tlb_update(&page_a);
+    tlblur_tlb_update(&page_b);
+    tlblur_tlb_update(&page_c);
+    tlblur_tlb_update(&page_a);
+    tlblur_tlb_update((void*) &my_fun);
+    tlblur_tlb_update((void*) &my_fun_noc3);
+    tlblur_enable(4);
+
     sgx_register_aex_handler(&node, my_aex_notify_handler, (const void*)args);
 
    const uint32_t local_count = count_powers_of_two(low,high);
@@ -99,4 +120,23 @@ void count_powers_of_two_with_aex(uint64_t low, uint64_t high, uint32_t* count, 
    *aex_count = g_aex_count;
 }
 
+inline void __attribute__((always_inline)) maccess(void* p)
+{
+    asm volatile (
+    "mov (%0), %%rax\n"
+    :
+    : "c" (p)
+    : "rax");
+}
 
+void ecall_get_addr(uint64_t *pa, uint64_t *pc, uint64_t *pf)
+{
+    *pa = (uint64_t) &page_a;
+    *pc = (uint64_t) &page_c;
+    *pf = (uint64_t) &my_fun;
+
+    /* allocate page-table entries */
+    my_fun();
+    maccess(&page_a);
+    maccess(&page_c);
+}

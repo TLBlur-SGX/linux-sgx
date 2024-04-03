@@ -43,6 +43,10 @@
 #include "App.h"
 #include "Enclave_u.h"
 
+extern "C" {
+    #include "pt.h"
+}
+
 /* Global EID shared by multiple threads */
 sgx_enclave_id_t global_eid = 0;
 
@@ -177,6 +181,10 @@ void ocall_print_string(const char *str)
     printf("%s", str);
 }
 
+void ocall_print_int(uint64_t i)
+{
+    printf("%#lx ", i);
+}
 
 /* Application entry */
 int SGX_CDECL main(int argc, char *argv[])
@@ -196,10 +204,11 @@ int SGX_CDECL main(int argc, char *argv[])
     // searching for powers of two between 0 and max_value.
     // Our initial max_value guess for something that will
     // take about 60 seconds is 0xffff.
-    uint64_t max_value = 0xffff;
+    uint64_t max_value = 0xffff00;
     time_t t1 = 0, t2 = 0;
     uint32_t count = 0;
 
+#if 0
     // Find out what max value takes more than 60 seconds when running
     // outside the enclave.
     while ((t2 - t1) < 60)
@@ -216,7 +225,32 @@ int SGX_CDECL main(int argc, char *argv[])
         printf("\tIt took %u seconds to compute\n", (uint32_t)(t2 - t1));
         fflush(stdout);
     }
-   
+#endif
+
+    uint64_t page_a = 0, page_c = 0, page_f = 0;
+    uint64_t *pte_a, *pte_c, *pte_f;
+    ecall_get_addr(global_eid, &page_a, &page_c, &page_f);
+    printf("page_a=%#lx; page_c=%#lx; page_f=%#lx\n", page_a, page_c, page_f);
+
+    pte_a = (uint64_t*) remap_page_table_level((void*) page_a, PTE);
+    pte_c = (uint64_t*) remap_page_table_level((void*) page_c, PTE);
+    pte_f = (uint64_t*) remap_page_table_level((void*) page_f, PTE);
+
+    *pte_a = MARK_NOT_ACCESSED(*pte_a);
+    *pte_c = MARK_NOT_ACCESSED(*pte_c);
+    *pte_f = MARK_NOT_ACCESSED(*pte_f);
+
+    *pte_a = MARK_CLEAN(*pte_a);
+    *pte_c = MARK_CLEAN(*pte_c);
+    *pte_f = MARK_CLEAN(*pte_f);
+
+    printf("PTE for %#lx is:\n", page_a);
+    print_pte(pte_a);
+    printf("PTE for %#lx is:\n", page_c);
+    print_pte(pte_c);
+    printf("PTE for %#lx is:\n", page_f);
+    print_pte(pte_f);
+ 
     // Now we have a good idea of something that should take at least 60 seconds
     // Make an ECALL for the same function with AEX Enabled. The function
     // will also count the number of times it its AEX handler was called back.
@@ -235,6 +269,12 @@ int SGX_CDECL main(int argc, char *argv[])
     printf("\tIt took %u seconds to compute\n", (uint32_t)(t2 - t1));
     printf("\tWe counted %lu async enclave exits during this time period. \n", aex_count);
 
+    printf("PTE for %#lx is:\n", page_a);
+    print_pte(pte_a);
+    printf("PTE for %#lx is:\n", page_c);
+    print_pte(pte_c);
+    printf("PTE for %#lx is:\n", page_f);
+    print_pte(pte_f); 
     /* Destroy the enclave */
     sgx_destroy_enclave(global_eid);
     

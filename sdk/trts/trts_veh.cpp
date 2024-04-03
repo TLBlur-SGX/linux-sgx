@@ -77,7 +77,6 @@ extern "C" sgx_status_t sgx_apply_mitigations(const sgx_exception_info_t *);
 extern uint16_t aex_notify_c3_cache[2048];
 extern uint8_t *__ct_mitigation_ret;
 
-
 // sgx_register_exception_handler()
 //      register a custom exception handler
 // Parameter
@@ -213,12 +212,154 @@ static inline uint64_t cselect64(uint64_t pred, const uint64_t expected, uint64_
     return new_val;
 }
 
+// #define TLBLUR_DBG
+#ifdef TLBLUR_DBG
+    extern "C" void ocall_print_int(const char *str, uint64_t i);
+    extern "C" void ocall_print_string(const char *str);
+    
+    #define tlblur_dbg_str(s) ocall_print_string(s)
+    #define tlblur_dbg_int(s, i) ocall_print_int(s, i)
+#else
+    #define tlblur_dbg_str(s)
+    #define tlblur_dbg_int(s, i)
+#endif
+
+// TLBlur global variables
+#define MAX_VTLB_SIZE 4096
+bool g_tlblur_enabled = false;
+uint64_t g_vtlb_size = 0, g_vtlb_r_size = 0, g_vtlb_x_size = 0, g_vtlb_w_size = 0;
+uint64_t g_tlblur_prefetch_buffer[MAX_VTLB_SIZE] = {0};
+uint64_t g_tlblur_prefetch_r[MAX_VTLB_SIZE] = {0};
+uint64_t g_tlblur_prefetch_w[MAX_VTLB_SIZE] = {0};
+uint64_t g_tlblur_prefetch_x[MAX_VTLB_SIZE] = {0};
+
+// #define TLBLUR
+#ifdef TLBLUR
+
+/* 
+ * NOTE: these symbols are provided by default in a custom GNU linker script.
+ * We keep two text sections, because bolt can create a second one.
+ */
+extern char _srx1;
+extern char _erx1;
+extern char _srx;
+extern char _erx;
+extern char _ero;
+extern char _sro;
+
+#define IS_EXEC(p) ((p >= (uint64_t) &_srx && p <= (uint64_t) &_erx) \
+                 || (p >= (uint64_t) &_srx1 && p <= (uint64_t) &_erx1))
+#define IS_RO(p) (p >= (uint64_t) &_sro && p <= ((uint64_t) &_ero + 0x1000))
+#define IS_RW(p) (!IS_EXEC(p) && !IS_RO(p))
+
+
+// defined in libtlblur
+#define SHADOW_PT_SIZE 0x10000
+extern "C" uint64_t __tlblur_shadow_pt[SHADOW_PT_SIZE] __attribute__((weak));
+extern "C" uint64_t __tlblur_global_counter __attribute__((weak));
+extern "C" uint64_t __tlblur_global_counter_backup __attribute__((weak));
+extern "C" void tlblur_tlb_update(void) __attribute__((weak));
+
+sgx_status_t tlblur_enable(uint64_t vtlb_size) {
+  tlblur_dbg_str("[tlblur] enabling prefetcher...\n");
+  if (vtlb_size > MAX_VTLB_SIZE)
+    return SGX_ERROR_UNEXPECTED;
+  g_vtlb_size = vtlb_size;
+  g_tlblur_enabled = true;
+  return SGX_SUCCESS;
+}
+
+sgx_status_t tlblur_disable() {
+  tlblur_dbg_str("[tlblur] disabling prefetcher...\n");
+  g_tlblur_enabled = false;
+  return SGX_SUCCESS;
+}
+
+typedef uint64_t (*map_fn)(uint64_t *, size_t);
+
+// Constant-time version of `find_most_recent_ct`.
+//
+// May leak `num`, but should not leak sTLB entries.
+void ct_sort(uint64_t input[], uint64_t output[], size_t input_len, size_t output_len, map_fn key_fn, map_fn value_fn) {
+  for (size_t j = 0; j < output_len; j++) {
+    uint64_t max = 0;
+    uint64_t max_index = 0;
+
+    for (size_t i = 0; i < input_len; i++) {
+      // Both `i` and `current` should not be used
+      // in branch conditions.
+      uint64_t current = value_fn(input, i);
+      uint64_t current_greater = current > max;
+
+      // Check if i is already in largest
+      //
+      // `j` is considered public (only depends on `num`)
+      // and can be part of a branch condition or number of iterations.
+      uint64_t skip = 0;
+      if (j > 0) {
+        for (size_t k = 0; k < j; k++) {
+          skip = cselect64(output[k], key_fn(input, i), 1, skip);
+        }
+      }
+
+      skip = skip || !current_greater;
+      max = cselect64(skip, 0, current, max);
+      max_index = cselect64(skip, 0, i, max_index);
+    }
+
+    output[j] = key_fn(input, max_index);
+  }
+}
+
+uint64_t identity(uint64_t *arr, size_t index) {
+  (void)arr;
+  return index;
+}
+
+uint64_t array_value(uint64_t *arr, size_t index) {
+  return arr[index];
+}
+#else
+
+sgx_status_t tlblur_enable(uint64_t vtlb_size) {
+  (void)vtlb_size;
+  return SGX_SUCCESS;
+}
+
+sgx_status_t tlblur_disable() {
+  return SGX_SUCCESS;
+}
+
+#endif
+
+// Look up the code page in the c3 cache
+uintptr_t c3_cache_lookup(uint64_t addr)
+{
+    uintptr_t page, c3_byte_address;
+
+    page = addr & ~0xFFF;
+    c3_byte_address = page + *(aex_notify_c3_cache + ((page >> 12) & 0x07FF));
+    if (*(uint8_t *)c3_byte_address != 0xc3) {
+        uint8_t *i = (uint8_t *)page, *e = i + 4096;
+        for (; i != e && *i != 0xc3; ++i) {}
+        if (i == e) { // page does not contain a c3 byte
+            c3_byte_address = (uintptr_t)&__ct_mitigation_ret;
+        } else {
+            c3_byte_address = (uintptr_t)i;
+            *(aex_notify_c3_cache + ((page >> 12) & 0x07FF)) =
+                (uint16_t)(c3_byte_address & 0xFFF);
+        }
+    }
+
+    return c3_byte_address;
+}
+
 // apply the constant time mitigation handler
 static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_exception_info_t *info)
 {
     thread_data_t *thread_data = get_thread_data();
     int ct_result;
-    uint64_t data_address;
+    uint64_t data_address = 0;
     uintptr_t code_tickle_page, c3_byte_address, stack_tickle_pages, data_tickle_address,
               stack_base_page = ((thread_data->stack_base_addr & ~0xFFF) == 0) ?
                   (thread_data->stack_base_addr) - 0x1000 :
@@ -247,18 +388,10 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
 
     // Look up the code page in the c3 cache
     code_tickle_page = info->cpu_context.REG(ip) & ~0xFFF;
-    c3_byte_address = code_tickle_page + *(aex_notify_c3_cache + ((code_tickle_page >> 12) & 0x07FF));
-    if (*(uint8_t *)c3_byte_address != 0xc3) {
-        uint8_t *i = (uint8_t *)code_tickle_page, *e = i + 4096;
-        for (; i != e && *i != 0xc3; ++i) {}
-        if (i == e) { // code_tickle_page does not contain a c3 byte
-            c3_byte_address = (uintptr_t)&__ct_mitigation_ret;
-        } else {
-            c3_byte_address = (uintptr_t)i;
-            *(aex_notify_c3_cache + ((code_tickle_page >> 12) & 0x07FF)) =
-                (uint16_t)(c3_byte_address & 0xFFF);
-        }
-    }
+    tlblur_dbg_int("pc = %p\n", info->cpu_context.REG(ip));
+    tlblur_dbg_int("rdx = %p\n", info->cpu_context.REG(dx));
+    tlblur_dbg_int("rcx = %p\n", info->cpu_context.REG(cx));
+    c3_byte_address = c3_cache_lookup(code_tickle_page);
 
     ct_result = ct_decode(&info->cpu_context, &data_address);
 
@@ -294,6 +427,118 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
     }
     code_tickle_page |= (thread_data->aex_notify_entropy_cache & 1) << 4;
     thread_data->aex_notify_entropy_cache >>= 1;
+
+    tlblur_dbg_int("code_tickle_page is %p\n", (uint64_t)code_tickle_page - (uint64_t)&__ImageBase);
+    tlblur_dbg_int("stack_tickle_pages is %p\n", (uint64_t)stack_tickle_pages - (uint64_t)&__ImageBase);
+    tlblur_dbg_int("data_tickle_address is %p\n", (uint64_t)data_tickle_address - (uint64_t)&__ImageBase);
+
+    // Parse software TLB and prepare most recent N pages for prefetching
+    #ifdef TLBLUR
+    if (g_tlblur_enabled)
+    {
+        tlblur_dbg_str("[tlblur] preparing sorted prefetch arrays..\n");
+        // ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_r, SHADOW_PT_SIZE, g_vtlb_size, identity, array_value);
+        ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_buffer, SHADOW_PT_SIZE, g_vtlb_size, identity, array_value);
+        ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_vtlb_size, g_vtlb_size, array_value, array_value);
+
+        tlblur_dbg_int("_srx1: %p\n", (uint64_t) &_srx1 - (uint64_t)&__ImageBase);
+        tlblur_dbg_int("_erx1: %p\n", (uint64_t) &_erx1 - (uint64_t)&__ImageBase);
+        tlblur_dbg_int("_srx: %p\n", (uint64_t) &_srx - (uint64_t)&__ImageBase);
+        tlblur_dbg_int("_erx: %p\n", (uint64_t) &_erx - (uint64_t)&__ImageBase);
+        tlblur_dbg_int("_sro: %p\n", (uint64_t) &_sro - (uint64_t)&__ImageBase);
+        tlblur_dbg_int("_ero: %p\n", (uint64_t) &_ero - (uint64_t)&__ImageBase);
+        /*
+         * NOTE: we save this in a global array and not on the reserved area on
+         * the stack, so in case the mitigation gets interrupted, this code
+         * will be re-executed. But this is not a problem since the global
+         * __tlblur_shadow_pt will remain unchanged (only perhaps the accesses
+         * from the exception handler itself will be incremented, but these
+         * should be prefetched anyway..)
+         */
+
+        // tlblur_dbg_int("global counter : %lu\n", __tlblur_global_counter_backup);
+        
+        tlblur_dbg_str("\treadable pages  : ");
+        for (size_t i = 0; i < g_vtlb_size; ++i)
+        {
+            uint64_t p = g_tlblur_prefetch_r[i];
+            if (p == 0) {
+                g_tlblur_prefetch_r[i] = code_tickle_page;
+            } else {
+                tlblur_dbg_int("%lu:", __tlblur_shadow_pt[p]);
+                g_tlblur_prefetch_r[i] = ((uint64_t) get_enclave_base()) + (p << 12);
+            }
+            tlblur_dbg_int("%p ", g_tlblur_prefetch_r[i] - ((uint64_t) get_enclave_base()));
+        }
+        tlblur_dbg_str("\n");
+        g_vtlb_r_size = g_vtlb_size;
+
+        g_vtlb_x_size = 0;
+        tlblur_dbg_str("\texecutable pages: ");
+        for (size_t i = 0; i < g_vtlb_size; ++i)
+        {
+            uint64_t p = g_tlblur_prefetch_r[i];
+            if (IS_EXEC(p))
+            {
+                p = c3_cache_lookup(p);
+                g_tlblur_prefetch_x[g_vtlb_x_size++] = p;
+                tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
+            }
+        }
+        tlblur_dbg_str("\n");
+
+        g_vtlb_w_size = 0;
+        tlblur_dbg_str("\twritable pages  : ");
+        for (size_t i = 0; i < g_vtlb_size; ++i)
+        {
+            uint64_t p = g_tlblur_prefetch_r[i];
+            if (IS_RW(p)) 
+            {
+                g_tlblur_prefetch_w[g_vtlb_w_size++] = p;
+                tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
+            }
+        }
+        tlblur_dbg_str("\n");
+
+        // Prefetch software TLB pages
+        tlblur_dbg_str("\tsTLB pages  : ");
+        for (size_t i = 0; i < SHADOW_PT_SIZE / 0x1000; i++) {
+            uint64_t p = (uint64_t)&__tlblur_shadow_pt + i * 0x1000;
+            g_tlblur_prefetch_r[g_vtlb_r_size++] = p;
+            g_tlblur_prefetch_w[g_vtlb_w_size++] = p;
+            tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
+        }
+
+        {
+            uint64_t p = (uint64_t)&__tlblur_global_counter;
+            g_tlblur_prefetch_r[g_vtlb_r_size++] = p;
+            g_tlblur_prefetch_w[g_vtlb_w_size++] = p;
+            tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
+        }
+        tlblur_dbg_str("\n");
+
+        // Prefetch software TLB update code
+        tlblur_dbg_str("\tsTLB update code page  : ");
+        {
+            uint64_t p = (uint64_t)tlblur_tlb_update;
+            tlblur_dbg_int("%p -> ", p);
+            if (p != NULL) {
+                g_tlblur_prefetch_r[g_vtlb_r_size++] = p;
+                g_tlblur_prefetch_x[g_vtlb_x_size++] = p;
+                tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
+            }
+        }
+        tlblur_dbg_str("\n");
+        
+        // g_vtlb_w_size = 0;
+    }
+    else
+    {
+        g_vtlb_size = 0;
+        g_vtlb_x_size = 0;
+        g_vtlb_w_size = 0;
+    }
+    #endif
 
     // There are three additional "implicit" parameters to this function:
     // 1. The low-order bit of `stack_tickle_pages` is 1 if a second stack
@@ -469,6 +714,12 @@ extern "C" const char Leverifyreport2_inst;
 //      none zero - success
 extern "C" sgx_status_t trts_handle_exception(void *tcs)
 {
+    // if (g_tlblur_enabled) {
+    //     // Disable instrumentation during AEX handling
+    //     __tlblur_global_counter_backup = __tlblur_global_counter;
+    //     __tlblur_global_counter = 0;
+    // }
+    
     thread_data_t *thread_data = get_thread_data();
     ssa_gpr_t *ssa_gpr = NULL;
     sgx_exception_info_t *info = NULL;

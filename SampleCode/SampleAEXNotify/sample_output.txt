@@ -1,0 +1,30 @@
+[encl] page_a/b/c/d addresses: 0x7e59a5014000 0x7e59a5015000 0x7e59a5016000 0x7e59a5017000 
+[tlblur] enabling prefetcher...
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+[tlblur] preparing sorted prefetch array: 0x1017 0x7e59a5017000 0x1014 0x7e59a5014000 0x1016 0x7e59a5016000 
+There are 24 powers of two between 0 and 0xffff00 (calculated inside the enclave)
+	It took 0 seconds to compute
+	We counted 24 async enclave exits during this time period. 
+Info: SampleAEXNotify successfully returned.
