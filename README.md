@@ -1,4 +1,6 @@
+# Linux SGX SDK with TLBlur prefetcher [![DOI](https://zenodo.org/badge/911574351.svg)](https://doi.org/10.5281/zenodo.14645863)
 
+Original README below.
 
 Intel(R) Software Guard Extensions for Linux\* OS
 ================================================
