@@ -233,7 +233,7 @@ uint64_t g_tlblur_prefetch_r[MAX_VTLB_SIZE] = {0};
 uint64_t g_tlblur_prefetch_w[MAX_VTLB_SIZE] = {0};
 uint64_t g_tlblur_prefetch_x[MAX_VTLB_SIZE] = {0};
 
-// #define TLBLUR
+#define TLBLUR
 #ifdef TLBLUR
 
 /* 
@@ -255,6 +255,7 @@ extern char _sro;
 
 // defined in libtlblur
 #define SHADOW_PT_SIZE 0x10000
+uint64_t g_tlblur_pam_size = SHADOW_PT_SIZE;
 extern "C" uint64_t __tlblur_shadow_pt[SHADOW_PT_SIZE] __attribute__((weak));
 extern "C" uint64_t __tlblur_global_counter __attribute__((weak));
 extern "C" uint64_t __tlblur_global_counter_backup __attribute__((weak));
@@ -265,7 +266,15 @@ sgx_status_t tlblur_enable(uint64_t vtlb_size) {
   if (vtlb_size > MAX_VTLB_SIZE)
     return SGX_ERROR_UNEXPECTED;
   g_vtlb_size = vtlb_size;
+  uint64_t enclave_size = get_enclave_size() / 0x1000;
+  if (enclave_size < SHADOW_PT_SIZE)
+    g_tlblur_pam_size = enclave_size;
+  if (g_vtlb_size > g_tlblur_pam_size)
+    g_vtlb_size = g_tlblur_pam_size;
   g_tlblur_enabled = true;
+  tlblur_dbg_str("[tlblur] enabled:\n");
+  tlblur_dbg_int("\t -> |PAM| = %d\n", g_tlblur_pam_size);
+  tlblur_dbg_int("\t -> |PWS| = %d\n", g_vtlb_size);
   return SGX_SUCCESS;
 }
 
@@ -318,6 +327,69 @@ uint64_t identity(uint64_t *arr, size_t index) {
 
 uint64_t array_value(uint64_t *arr, size_t index) {
   return arr[index];
+}
+
+// Monomorphized versions of `ct_sort` as a quick and dirty performance improvement
+void ct_sort_a(uint64_t input[], uint64_t output[], size_t input_len, size_t output_len) {
+  for (size_t j = 0; j < output_len; j++) {
+    uint64_t max = 0;
+    uint64_t max_index = 0;
+
+    for (size_t i = 0; i < input_len; i++) {
+      // Both `i` and `current` should not be used
+      // in branch conditions.
+      uint64_t current = input[i];
+      uint64_t current_greater = current > max;
+
+      // Check if i is already in largest
+      //
+      // `j` is considered public (only depends on `num`)
+      // and can be part of a branch condition or number of iterations.
+      uint64_t skip = 0;
+      if (j > 0) {
+        for (size_t k = 0; k < j; k++) {
+          skip = cselect64(output[k], i, 1, skip);
+        }
+      }
+
+      skip = skip || !current_greater;
+      max = cselect64(skip, 0, current, max);
+      max_index = cselect64(skip, 0, i, max_index);
+    }
+
+    output[j] = max_index;
+  }
+}
+
+void ct_sort_b(uint64_t input[], uint64_t output[], size_t input_len, size_t output_len) {
+  for (size_t j = 0; j < output_len; j++) {
+    uint64_t max = 0;
+    uint64_t max_index = 0;
+
+    for (size_t i = 0; i < input_len; i++) {
+      // Both `i` and `current` should not be used
+      // in branch conditions.
+      uint64_t current = input[i];
+      uint64_t current_greater = current > max;
+
+      // Check if i is already in largest
+      //
+      // `j` is considered public (only depends on `num`)
+      // and can be part of a branch condition or number of iterations.
+      uint64_t skip = 0;
+      if (j > 0) {
+        for (size_t k = 0; k < j; k++) {
+          skip = cselect64(output[k], input[i], 1, skip);
+        }
+      }
+
+      skip = skip || !current_greater;
+      max = cselect64(skip, 0, current, max);
+      max_index = cselect64(skip, 0, i, max_index);
+    }
+
+    output[j] = input[max_index];
+  }
 }
 #else
 
@@ -394,6 +466,7 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
     c3_byte_address = c3_cache_lookup(code_tickle_page);
 
     ct_result = ct_decode(&info->cpu_context, &data_address);
+    // ct_result = 0;
 
     data_tickle_address = stack_tickle_pages & ~0x1;
     data_tickle_address = cselect64(ct_result, 1, data_address, data_tickle_address);
@@ -438,8 +511,10 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
     {
         tlblur_dbg_str("[tlblur] preparing sorted prefetch arrays..\n");
         // ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_r, SHADOW_PT_SIZE, g_vtlb_size, identity, array_value);
-        ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_buffer, SHADOW_PT_SIZE, g_vtlb_size, identity, array_value);
-        ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_vtlb_size, g_vtlb_size, array_value, array_value);
+        // ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_buffer, SHADOW_PT_SIZE, g_vtlb_size, identity, array_value);
+        // ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_vtlb_size, g_vtlb_size, array_value, array_value);
+        ct_sort_a(__tlblur_shadow_pt, g_tlblur_prefetch_buffer, g_tlblur_pam_size, g_vtlb_size);
+        ct_sort_b(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_vtlb_size, g_vtlb_size);
 
         tlblur_dbg_int("_srx1: %p\n", (uint64_t) &_srx1 - (uint64_t)&__ImageBase);
         tlblur_dbg_int("_erx1: %p\n", (uint64_t) &_erx1 - (uint64_t)&__ImageBase);
@@ -462,10 +537,10 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         for (size_t i = 0; i < g_vtlb_size; ++i)
         {
             uint64_t p = g_tlblur_prefetch_r[i];
+            tlblur_dbg_int("%lu:", __tlblur_shadow_pt[p]);
             if (p == 0) {
-                g_tlblur_prefetch_r[i] = code_tickle_page;
+                g_tlblur_prefetch_r[i] = (uint64_t)code_tickle_page;
             } else {
-                tlblur_dbg_int("%lu:", __tlblur_shadow_pt[p]);
                 g_tlblur_prefetch_r[i] = ((uint64_t) get_enclave_base()) + (p << 12);
             }
             tlblur_dbg_int("%p ", g_tlblur_prefetch_r[i] - ((uint64_t) get_enclave_base()));
@@ -569,6 +644,8 @@ extern "C" __attribute__((regparm(1))) void internal_handle_exception(sgx_except
     uintptr_t *ntmp = NULL;
     uintptr_t xsp = 0;
     uint8_t *xsave_in_ssa = (uint8_t*)ROUND_TO_PAGE(thread_data->first_ssa_gpr) - ROUND_TO_PAGE(get_xsave_size() + sizeof(ssa_gpr_t));
+
+    tlblur_dbg_str("internal_handle_exception\n");
 
     // AEX Notify allows this handler to handle interrupts
     if (info == NULL) {
@@ -714,12 +791,6 @@ extern "C" const char Leverifyreport2_inst;
 //      none zero - success
 extern "C" sgx_status_t trts_handle_exception(void *tcs)
 {
-    // if (g_tlblur_enabled) {
-    //     // Disable instrumentation during AEX handling
-    //     __tlblur_global_counter_backup = __tlblur_global_counter;
-    //     __tlblur_global_counter = 0;
-    // }
-    
     thread_data_t *thread_data = get_thread_data();
     ssa_gpr_t *ssa_gpr = NULL;
     sgx_exception_info_t *info = NULL;
