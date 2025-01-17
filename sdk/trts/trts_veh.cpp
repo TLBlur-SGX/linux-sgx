@@ -212,7 +212,7 @@ static inline uint64_t cselect64(uint64_t pred, const uint64_t expected, uint64_
     return new_val;
 }
 
-// #define TLBLUR_DBG
+#define TLBLUR_DBG
 #ifdef TLBLUR_DBG
     extern "C" void ocall_print_int(const char *str, uint64_t i);
     extern "C" void ocall_print_string(const char *str);
@@ -227,7 +227,10 @@ static inline uint64_t cselect64(uint64_t pred, const uint64_t expected, uint64_
 // TLBlur global variables
 #define MAX_VTLB_SIZE 4096
 bool g_tlblur_enabled = false;
-uint64_t g_vtlb_size = 0, g_vtlb_r_size = 0, g_vtlb_x_size = 0, g_vtlb_w_size = 0;
+uint64_t g_tlblur_pws_size = 0, 
+    g_tlblur_pws_r_size = 0, 
+    g_tlblur_pws_x_size = 0, 
+    g_tlblur_pws_w_size = 0;
 uint64_t g_tlblur_prefetch_buffer[MAX_VTLB_SIZE] = {0};
 uint64_t g_tlblur_prefetch_r[MAX_VTLB_SIZE] = {0};
 uint64_t g_tlblur_prefetch_w[MAX_VTLB_SIZE] = {0};
@@ -265,16 +268,16 @@ sgx_status_t tlblur_enable(uint64_t vtlb_size) {
   tlblur_dbg_str("[tlblur] enabling prefetcher...\n");
   if (vtlb_size > MAX_VTLB_SIZE)
     return SGX_ERROR_UNEXPECTED;
-  g_vtlb_size = vtlb_size;
+  g_tlblur_pws_size = vtlb_size;
   uint64_t enclave_size = get_enclave_size() / 0x1000;
   if (enclave_size < SHADOW_PT_SIZE)
     g_tlblur_pam_size = enclave_size;
-  if (g_vtlb_size > g_tlblur_pam_size)
-    g_vtlb_size = g_tlblur_pam_size;
+  if (g_tlblur_pws_size > g_tlblur_pam_size)
+    g_tlblur_pws_size = g_tlblur_pam_size;
   g_tlblur_enabled = true;
   tlblur_dbg_str("[tlblur] enabled:\n");
   tlblur_dbg_int("\t -> |PAM| = %d\n", g_tlblur_pam_size);
-  tlblur_dbg_int("\t -> |PWS| = %d\n", g_vtlb_size);
+  tlblur_dbg_int("\t -> |PWS| = %d\n", g_tlblur_pws_size);
   return SGX_SUCCESS;
 }
 
@@ -327,6 +330,33 @@ uint64_t identity(uint64_t *arr, size_t index) {
 
 uint64_t array_value(uint64_t *arr, size_t index) {
   return arr[index];
+}
+
+extern "C" void ct_select_max_lt(uint64_t input[], size_t input_len, uint64_t limit, uint64_t *max, size_t *max_idx);
+// __attribute__((optimize("O3")))
+void ct_select_max_lt_c(uint64_t input[], size_t input_len, uint64_t limit, uint64_t *max, size_t *max_idx) {
+    *max = 0;
+    *max_idx = 0;
+    for (size_t i = 0; i < input_len; i++) {
+        uint64_t cur = input[i];
+        uint64_t replace = cur < limit;
+        replace &= cur >= *max;
+        *max = cselect64(replace, 1, cur, *max);
+        *max_idx = cselect64(replace, 1, i, *max_idx);
+
+        
+        // __asm__("cmp %3, %1\n\t"
+        //         "cmove %2, %0"
+        //         : "+rm"(new_val)
+        //         : "rm"(replace), "rm"(old_val), "ri"(expected));
+    }
+}
+
+void ct_select_pws(uint64_t pam[], size_t pws[], size_t pam_len, size_t pws_len) {
+    uint64_t limit = -1;
+    for (size_t i = 0; i < pws_len; i++) {
+        ct_select_max_lt(pam, pam_len, limit, &limit, pws + i);
+    }
 }
 
 // Monomorphized versions of `ct_sort` as a quick and dirty performance improvement
@@ -510,11 +540,14 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
     if (g_tlblur_enabled)
     {
         tlblur_dbg_str("[tlblur] preparing sorted prefetch arrays..\n");
-        // ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_r, SHADOW_PT_SIZE, g_vtlb_size, identity, array_value);
-        // ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_buffer, SHADOW_PT_SIZE, g_vtlb_size, identity, array_value);
-        // ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_vtlb_size, g_vtlb_size, array_value, array_value);
-        ct_sort_a(__tlblur_shadow_pt, g_tlblur_prefetch_buffer, g_tlblur_pam_size, g_vtlb_size);
-        ct_sort_b(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_vtlb_size, g_vtlb_size);
+        // ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_r, SHADOW_PT_SIZE, g_tlblur_pws_size, identity, array_value);
+        // ct_sort(__tlblur_shadow_pt, g_tlblur_prefetch_buffer, SHADOW_PT_SIZE, g_tlblur_pws_size, identity, array_value);
+        // ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_tlblur_pws_size, g_tlblur_pws_size, array_value, array_value);
+
+        // ct_sort_a(__tlblur_shadow_pt, g_tlblur_prefetch_r, g_tlblur_pam_size, g_tlblur_pws_size);
+        ct_select_pws(__tlblur_shadow_pt, g_tlblur_prefetch_r, g_tlblur_pam_size, g_tlblur_pws_size);
+
+        // ct_sort_b(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_tlblur_pws_size, g_tlblur_pws_size);
 
         tlblur_dbg_int("_srx1: %p\n", (uint64_t) &_srx1 - (uint64_t)&__ImageBase);
         tlblur_dbg_int("_erx1: %p\n", (uint64_t) &_erx1 - (uint64_t)&__ImageBase);
@@ -534,7 +567,7 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         // tlblur_dbg_int("global counter : %lu\n", __tlblur_global_counter_backup);
         
         tlblur_dbg_str("\treadable pages  : ");
-        for (size_t i = 0; i < g_vtlb_size; ++i)
+        for (size_t i = 0; i < g_tlblur_pws_size; ++i)
         {
             uint64_t p = g_tlblur_prefetch_r[i];
             tlblur_dbg_int("%lu:", __tlblur_shadow_pt[p]);
@@ -546,30 +579,30 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
             tlblur_dbg_int("%p ", g_tlblur_prefetch_r[i] - ((uint64_t) get_enclave_base()));
         }
         tlblur_dbg_str("\n");
-        g_vtlb_r_size = g_vtlb_size;
+        g_tlblur_pws_r_size = g_tlblur_pws_size;
 
-        g_vtlb_x_size = 0;
+        g_tlblur_pws_x_size = 0;
         tlblur_dbg_str("\texecutable pages: ");
-        for (size_t i = 0; i < g_vtlb_size; ++i)
+        for (size_t i = 0; i < g_tlblur_pws_size; ++i)
         {
             uint64_t p = g_tlblur_prefetch_r[i];
             if (IS_EXEC(p))
             {
                 p = c3_cache_lookup(p);
-                g_tlblur_prefetch_x[g_vtlb_x_size++] = p;
+                g_tlblur_prefetch_x[g_tlblur_pws_x_size++] = p;
                 tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
             }
         }
         tlblur_dbg_str("\n");
 
-        g_vtlb_w_size = 0;
+        g_tlblur_pws_w_size = 0;
         tlblur_dbg_str("\twritable pages  : ");
-        for (size_t i = 0; i < g_vtlb_size; ++i)
+        for (size_t i = 0; i < g_tlblur_pws_size; ++i)
         {
             uint64_t p = g_tlblur_prefetch_r[i];
             if (IS_RW(p)) 
             {
-                g_tlblur_prefetch_w[g_vtlb_w_size++] = p;
+                g_tlblur_prefetch_w[g_tlblur_pws_w_size++] = p;
                 tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
             }
         }
@@ -579,15 +612,15 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         tlblur_dbg_str("\tsTLB pages  : ");
         for (size_t i = 0; i < SHADOW_PT_SIZE / 0x1000; i++) {
             uint64_t p = (uint64_t)&__tlblur_shadow_pt + i * 0x1000;
-            g_tlblur_prefetch_r[g_vtlb_r_size++] = p;
-            g_tlblur_prefetch_w[g_vtlb_w_size++] = p;
+            g_tlblur_prefetch_r[g_tlblur_pws_r_size++] = p;
+            g_tlblur_prefetch_w[g_tlblur_pws_w_size++] = p;
             tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
         }
 
         {
             uint64_t p = (uint64_t)&__tlblur_global_counter;
-            g_tlblur_prefetch_r[g_vtlb_r_size++] = p;
-            g_tlblur_prefetch_w[g_vtlb_w_size++] = p;
+            g_tlblur_prefetch_r[g_tlblur_pws_r_size++] = p;
+            g_tlblur_prefetch_w[g_tlblur_pws_w_size++] = p;
             tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
         }
         tlblur_dbg_str("\n");
@@ -598,20 +631,20 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
             uint64_t p = (uint64_t)tlblur_tlb_update;
             tlblur_dbg_int("%p -> ", p);
             if (p != NULL) {
-                g_tlblur_prefetch_r[g_vtlb_r_size++] = p;
-                g_tlblur_prefetch_x[g_vtlb_x_size++] = p;
+                g_tlblur_prefetch_r[g_tlblur_pws_r_size++] = p;
+                g_tlblur_prefetch_x[g_tlblur_pws_x_size++] = p;
                 tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
             }
         }
         tlblur_dbg_str("\n");
         
-        // g_vtlb_w_size = 0;
+        // g_tlblur_pws_w_size = 0;
     }
     else
     {
-        g_vtlb_size = 0;
-        g_vtlb_x_size = 0;
-        g_vtlb_w_size = 0;
+        g_tlblur_pws_size = 0;
+        g_tlblur_pws_x_size = 0;
+        g_tlblur_pws_w_size = 0;
     }
     #endif
 
