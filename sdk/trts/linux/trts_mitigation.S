@@ -72,16 +72,19 @@ DECLARE_LOCAL_FUNC ct_select_max_lt
     xor %rax, %rax
 1:
     cmp %rax, %rsi
-    jne 2f
+    je 2f
 
     /* %r9 = input[i] */
     mov (%rdi,%rax,8), %r9
 
+    test %r9, %r9
+    jz 3f
+
     /* %r10 = (input[i] < limit) && (input[i] >= *max) */
-    cmp %r9, %rdx
+    cmp %rdx, %r9
     setb %r10b
     cmp %r9, (%rcx)
-    setae %r11b
+    setbe %r11b
     and %r11b, %r10b
 
     /* *max = r10 ? input[i] : *max */
@@ -93,11 +96,11 @@ DECLARE_LOCAL_FUNC ct_select_max_lt
     mov (%r8), %r11
     cmovne %rax, %r11
     mov %r11, (%r8)
-    
+3:
     inc %rax
     jmp 1b
 
-2:  
+2:
     ret
     .cfi_endproc
 

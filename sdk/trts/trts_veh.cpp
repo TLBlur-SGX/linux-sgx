@@ -212,7 +212,7 @@ static inline uint64_t cselect64(uint64_t pred, const uint64_t expected, uint64_
     return new_val;
 }
 
-#define TLBLUR_DBG
+// #define TLBLUR_DBG
 #ifdef TLBLUR_DBG
     extern "C" void ocall_print_int(const char *str, uint64_t i);
     extern "C" void ocall_print_string(const char *str);
@@ -339,6 +339,8 @@ void ct_select_max_lt_c(uint64_t input[], size_t input_len, uint64_t limit, uint
     *max_idx = 0;
     for (size_t i = 0; i < input_len; i++) {
         uint64_t cur = input[i];
+        if (!cur)
+            continue;
         uint64_t replace = cur < limit;
         replace &= cur >= *max;
         *max = cselect64(replace, 1, cur, *max);
@@ -355,7 +357,7 @@ void ct_select_max_lt_c(uint64_t input[], size_t input_len, uint64_t limit, uint
 void ct_select_pws(uint64_t pam[], size_t pws[], size_t pam_len, size_t pws_len) {
     uint64_t limit = -1;
     for (size_t i = 0; i < pws_len; i++) {
-        ct_select_max_lt(pam, pam_len, limit, &limit, pws + i);
+        ct_select_max_lt_c(pam, pam_len, limit, &limit, pws + i);
     }
 }
 
@@ -608,10 +610,10 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         }
         tlblur_dbg_str("\n");
 
-        // Prefetch software TLB pages
-        tlblur_dbg_str("\tsTLB pages  : ");
-        for (size_t i = 0; i < SHADOW_PT_SIZE / 0x1000; i++) {
-            uint64_t p = (uint64_t)&__tlblur_shadow_pt + i * 0x1000;
+        // Prefetch PAM pages
+        tlblur_dbg_str("\tPAM pages  : ");
+        for (size_t i = 0; i < g_tlblur_pam_size; i += 0x1000) {
+            uint64_t p = (uint64_t)&__tlblur_shadow_pt + i;
             g_tlblur_prefetch_r[g_tlblur_pws_r_size++] = p;
             g_tlblur_prefetch_w[g_tlblur_pws_w_size++] = p;
             tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
@@ -625,8 +627,8 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         }
         tlblur_dbg_str("\n");
 
-        // Prefetch software TLB update code
-        tlblur_dbg_str("\tsTLB update code page  : ");
+        // Prefetch PAM update code
+        tlblur_dbg_str("\tPAM code page  : ");
         {
             uint64_t p = (uint64_t)tlblur_tlb_update;
             tlblur_dbg_int("%p -> ", p);
