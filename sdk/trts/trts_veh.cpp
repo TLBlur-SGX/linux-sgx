@@ -257,8 +257,9 @@ extern char _sro;
 
 
 // defined in libtlblur
-#define SHADOW_PT_SIZE 0x10000
+#define SHADOW_PT_SIZE 0x100000
 uint64_t g_tlblur_pam_size = SHADOW_PT_SIZE;
+extern "C" uint64_t *timings __attribute__((weak));
 extern "C" uint64_t __tlblur_shadow_pt[SHADOW_PT_SIZE] __attribute__((weak));
 extern "C" uint64_t __tlblur_global_counter __attribute__((weak));
 extern "C" uint64_t __tlblur_global_counter_backup __attribute__((weak));
@@ -276,8 +277,10 @@ sgx_status_t tlblur_enable(uint64_t vtlb_size) {
     g_tlblur_pws_size = g_tlblur_pam_size;
   g_tlblur_enabled = true;
   tlblur_dbg_str("[tlblur] enabled:\n");
-  tlblur_dbg_int("\t -> |PAM| = %d\n", g_tlblur_pam_size);
-  tlblur_dbg_int("\t -> |PWS| = %d\n", g_tlblur_pws_size);
+  tlblur_dbg_int("\t -> |enclave|\t = %d\n", enclave_size);
+  tlblur_dbg_int("\t -> size limit\t = %d\n", SHADOW_PT_SIZE);
+  tlblur_dbg_int("\t -> |PAM|\t = %d\n", g_tlblur_pam_size);
+  tlblur_dbg_int("\t -> |PWS|\t = %d\n", g_tlblur_pws_size);
   return SGX_SUCCESS;
 }
 
@@ -332,8 +335,16 @@ uint64_t array_value(uint64_t *arr, size_t index) {
   return arr[index];
 }
 
-extern "C" void ct_select_max_lt(uint64_t input[], size_t input_len, uint64_t limit, uint64_t *max, size_t *max_idx);
-// __attribute__((optimize("O3")))
+// #define TLBLUR_CT_SELECT_ASM
+#ifdef TLBLUR_CT_SELECT_ASM
+#define ct_select_max_lt ct_select_max_lt_asm
+#define ct_select_pws ct_select_pws_asm
+#else
+#define ct_select_max_lt ct_select_max_lt_c
+#define ct_select_pws ct_select_pws_c
+#endif // TLBLUR_CT_SELECT_ASM
+
+extern "C" void ct_select_max_lt_asm(uint64_t input[], size_t input_len, uint64_t limit, uint64_t *max, size_t *max_idx);
 void ct_select_max_lt_c(uint64_t input[], size_t input_len, uint64_t limit, uint64_t *max, size_t *max_idx) {
     *max = 0;
     *max_idx = 0;
@@ -345,19 +356,14 @@ void ct_select_max_lt_c(uint64_t input[], size_t input_len, uint64_t limit, uint
         replace &= cur >= *max;
         *max = cselect64(replace, 1, cur, *max);
         *max_idx = cselect64(replace, 1, i, *max_idx);
-
-        
-        // __asm__("cmp %3, %1\n\t"
-        //         "cmove %2, %0"
-        //         : "+rm"(new_val)
-        //         : "rm"(replace), "rm"(old_val), "ri"(expected));
     }
 }
 
-void ct_select_pws(uint64_t pam[], size_t pws[], size_t pam_len, size_t pws_len) {
+extern "C" void ct_select_pws_asm(uint64_t pam[], size_t pam_len, size_t pws[], size_t pws_len);
+void ct_select_pws_c(uint64_t pam[], size_t pam_len, size_t pws[], size_t pws_len) {
     uint64_t limit = -1;
-    for (size_t i = 0; i < pws_len; i++) {
-        ct_select_max_lt_c(pam, pam_len, limit, &limit, pws + i);
+    for (size_t j = 0; j < pws_len; j++) {
+        ct_select_max_lt(pam, pam_len, limit, &limit, pws + j);
     }
 }
 
@@ -435,6 +441,45 @@ sgx_status_t tlblur_disable() {
 }
 
 #endif
+
+uint64_t rdtsc_begin( void )
+{
+  uint64_t begin;
+  uint32_t a, d;
+
+  asm volatile (
+    "mfence\n\t"
+    "RDTSCP\n\t"
+    "mov %%edx, %0\n\t"
+    "mov %%eax, %1\n\t"
+    "mfence\n\t"
+    : "=r" (d), "=r" (a)
+    :
+    : "%eax", "%ebx", "%ecx", "%edx");
+
+  begin = ((uint64_t)d << 32) | a;
+  return begin;
+}
+
+uint64_t rdtsc_end( void )
+{
+  uint64_t end;
+  uint32_t a, d;
+
+  asm volatile(
+    "mfence\n\t"
+    "RDTSCP\n\t"
+    "mov %%edx, %0\n\t"
+    "mov %%eax, %1\n\t"
+    "mfence\n\t"
+    : "=r" (d), "=r" (a)
+    :
+    : "%eax", "%ebx", "%ecx", "%edx");
+
+  end = ((uint64_t)d << 32) | a;
+  return end;
+}
+
 
 // Look up the code page in the c3 cache
 uintptr_t c3_cache_lookup(uint64_t addr)
@@ -547,7 +592,9 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         // ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_tlblur_pws_size, g_tlblur_pws_size, array_value, array_value);
 
         // ct_sort_a(__tlblur_shadow_pt, g_tlblur_prefetch_r, g_tlblur_pam_size, g_tlblur_pws_size);
-        ct_select_pws(__tlblur_shadow_pt, g_tlblur_prefetch_r, g_tlblur_pam_size, g_tlblur_pws_size);
+        timings[0] = rdtsc_begin();
+        ct_select_pws(__tlblur_shadow_pt, g_tlblur_pam_size, g_tlblur_prefetch_r, g_tlblur_pws_size);
+        timings[1] = rdtsc_end();
 
         // ct_sort_b(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_tlblur_pws_size, g_tlblur_pws_size);
 
@@ -638,9 +685,7 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
                 tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
             }
         }
-        tlblur_dbg_str("\n");
-        
-        // g_tlblur_pws_w_size = 0;
+        tlblur_dbg_str("\n");        
     }
     else
     {
@@ -659,6 +704,7 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
     //    by the mitigation
     // 3. Bit 4 of `code_tickle_page` is 1 if the cycle delay
     //    should be added to the mitigation
+    timings[2] = rdtsc_begin();
     constant_time_apply_sgxstep_mitigation_and_continue_execution(
                     info, thread_data->first_ssa_gpr + offsetof(ssa_gpr_t, aex_notify),
                     stack_tickle_pages, code_tickle_page,
