@@ -212,7 +212,7 @@ static inline uint64_t cselect64(uint64_t pred, const uint64_t expected, uint64_
     return new_val;
 }
 
-// #define TLBLUR_DBG
+#define TLBLUR_DBG
 #ifdef TLBLUR_DBG
     extern "C" void ocall_print_int(const char *str, uint64_t i);
     extern "C" void ocall_print_string(const char *str);
@@ -235,6 +235,7 @@ uint64_t g_tlblur_prefetch_buffer[MAX_VTLB_SIZE] = {0};
 uint64_t g_tlblur_prefetch_r[MAX_VTLB_SIZE] = {0};
 uint64_t g_tlblur_prefetch_w[MAX_VTLB_SIZE] = {0};
 uint64_t g_tlblur_prefetch_x[MAX_VTLB_SIZE] = {0};
+extern "C" uint64_t *timings __attribute__((weak));
 
 #define TLBLUR
 #ifdef TLBLUR
@@ -259,7 +260,6 @@ extern char _sro;
 // defined in libtlblur
 #define SHADOW_PT_SIZE 0x100000
 uint64_t g_tlblur_pam_size = SHADOW_PT_SIZE;
-extern "C" uint64_t *timings __attribute__((weak));
 extern "C" uint64_t __tlblur_shadow_pt[SHADOW_PT_SIZE] __attribute__((weak));
 extern "C" uint64_t __tlblur_global_counter __attribute__((weak));
 extern "C" uint64_t __tlblur_global_counter_backup __attribute__((weak));
@@ -621,7 +621,7 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
             uint64_t p = g_tlblur_prefetch_r[i];
             tlblur_dbg_int("%lu:", __tlblur_shadow_pt[p]);
             if (p == 0) {
-                g_tlblur_prefetch_r[i] = (uint64_t)code_tickle_page;
+                g_tlblur_prefetch_r[i] = (uint64_t)c3_byte_address;
             } else {
                 g_tlblur_prefetch_r[i] = ((uint64_t) get_enclave_base()) + (p << 12);
             }
@@ -680,6 +680,7 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
             uint64_t p = (uint64_t)tlblur_tlb_update;
             tlblur_dbg_int("%p -> ", p);
             if (p != NULL) {
+                p = c3_cache_lookup(p);
                 g_tlblur_prefetch_r[g_tlblur_pws_r_size++] = p;
                 g_tlblur_prefetch_x[g_tlblur_pws_x_size++] = p;
                 tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
