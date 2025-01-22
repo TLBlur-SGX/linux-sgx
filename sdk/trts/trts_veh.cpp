@@ -212,7 +212,9 @@ static inline uint64_t cselect64(uint64_t pred, const uint64_t expected, uint64_
     return new_val;
 }
 
-#define TLBLUR_DBG
+#define TLBLUR_BENCHMARK
+
+// #define TLBLUR_DBG
 #ifdef TLBLUR_DBG
     extern "C" void ocall_print_int(const char *str, uint64_t i);
     extern "C" void ocall_print_string(const char *str);
@@ -290,51 +292,6 @@ sgx_status_t tlblur_disable() {
   return SGX_SUCCESS;
 }
 
-typedef uint64_t (*map_fn)(uint64_t *, size_t);
-
-// Constant-time version of `find_most_recent_ct`.
-//
-// May leak `num`, but should not leak sTLB entries.
-void ct_sort(uint64_t input[], uint64_t output[], size_t input_len, size_t output_len, map_fn key_fn, map_fn value_fn) {
-  for (size_t j = 0; j < output_len; j++) {
-    uint64_t max = 0;
-    uint64_t max_index = 0;
-
-    for (size_t i = 0; i < input_len; i++) {
-      // Both `i` and `current` should not be used
-      // in branch conditions.
-      uint64_t current = value_fn(input, i);
-      uint64_t current_greater = current > max;
-
-      // Check if i is already in largest
-      //
-      // `j` is considered public (only depends on `num`)
-      // and can be part of a branch condition or number of iterations.
-      uint64_t skip = 0;
-      if (j > 0) {
-        for (size_t k = 0; k < j; k++) {
-          skip = cselect64(output[k], key_fn(input, i), 1, skip);
-        }
-      }
-
-      skip = skip || !current_greater;
-      max = cselect64(skip, 0, current, max);
-      max_index = cselect64(skip, 0, i, max_index);
-    }
-
-    output[j] = key_fn(input, max_index);
-  }
-}
-
-uint64_t identity(uint64_t *arr, size_t index) {
-  (void)arr;
-  return index;
-}
-
-uint64_t array_value(uint64_t *arr, size_t index) {
-  return arr[index];
-}
-
 // #define TLBLUR_CT_SELECT_ASM
 #ifdef TLBLUR_CT_SELECT_ASM
 #define ct_select_max_lt ct_select_max_lt_asm
@@ -367,39 +324,7 @@ void ct_select_pws_c(uint64_t pam[], size_t pam_len, size_t pws[], size_t pws_le
     }
 }
 
-// Monomorphized versions of `ct_sort` as a quick and dirty performance improvement
-void ct_sort_a(uint64_t input[], uint64_t output[], size_t input_len, size_t output_len) {
-  for (size_t j = 0; j < output_len; j++) {
-    uint64_t max = 0;
-    uint64_t max_index = 0;
-
-    for (size_t i = 0; i < input_len; i++) {
-      // Both `i` and `current` should not be used
-      // in branch conditions.
-      uint64_t current = input[i];
-      uint64_t current_greater = current > max;
-
-      // Check if i is already in largest
-      //
-      // `j` is considered public (only depends on `num`)
-      // and can be part of a branch condition or number of iterations.
-      uint64_t skip = 0;
-      if (j > 0) {
-        for (size_t k = 0; k < j; k++) {
-          skip = cselect64(output[k], i, 1, skip);
-        }
-      }
-
-      skip = skip || !current_greater;
-      max = cselect64(skip, 0, current, max);
-      max_index = cselect64(skip, 0, i, max_index);
-    }
-
-    output[j] = max_index;
-  }
-}
-
-void ct_sort_b(uint64_t input[], uint64_t output[], size_t input_len, size_t output_len) {
+void ct_sort(uint64_t input[], uint64_t output[], size_t input_len, size_t output_len) {
   for (size_t j = 0; j < output_len; j++) {
     uint64_t max = 0;
     uint64_t max_index = 0;
@@ -592,11 +517,14 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         // ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_tlblur_pws_size, g_tlblur_pws_size, array_value, array_value);
 
         // ct_sort_a(__tlblur_shadow_pt, g_tlblur_prefetch_r, g_tlblur_pam_size, g_tlblur_pws_size);
+        #ifdef TLBLUR_BENCHMARK
         timings[0] = rdtsc_begin();
-        ct_select_pws(__tlblur_shadow_pt, g_tlblur_pam_size, g_tlblur_prefetch_r, g_tlblur_pws_size);
+        #endif
+        ct_select_pws(__tlblur_shadow_pt, g_tlblur_pam_size, g_tlblur_prefetch_buffer, g_tlblur_pws_size);
+        ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_tlblur_pws_size, g_tlblur_pws_size);
+        #ifdef TLBLUR_BENCHMARK
         timings[1] = rdtsc_end();
-
-        // ct_sort_b(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_tlblur_pws_size, g_tlblur_pws_size);
+        #endif
 
         tlblur_dbg_int("_srx1: %p\n", (uint64_t) &_srx1 - (uint64_t)&__ImageBase);
         tlblur_dbg_int("_erx1: %p\n", (uint64_t) &_erx1 - (uint64_t)&__ImageBase);
@@ -705,7 +633,9 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
     //    by the mitigation
     // 3. Bit 4 of `code_tickle_page` is 1 if the cycle delay
     //    should be added to the mitigation
+    #ifdef TLBLUR_BENCHMARK
     timings[2] = rdtsc_begin();
+    #endif
     constant_time_apply_sgxstep_mitigation_and_continue_execution(
                     info, thread_data->first_ssa_gpr + offsetof(ssa_gpr_t, aex_notify),
                     stack_tickle_pages, code_tickle_page,
