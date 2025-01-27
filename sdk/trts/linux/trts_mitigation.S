@@ -58,6 +58,144 @@ aex_notify_c3_cache:
     .section .nipx,"ax",@progbits
 
 /*
+ * extern "C" 
+ * void ct_select_max_lt(
+ *     uint64_t input[],    -> RDI
+ *     size_t input_len,    -> RSI
+ *     uint64_t limit,      -> RDX
+ *     uint64_t *max,       -> RCX
+ *     size_t *max_idx);    -> R8
+ */
+DECLARE_LOCAL_FUNC ct_select_max_lt_asm
+    movq $0, (%rcx)
+    movq $0, (%r8)
+    push %rcx
+    push %r8
+    movq (%rcx), %rcx
+    movq (%r8), %r8
+    xor %rax, %rax
+1:
+    cmp %rax, %rsi
+    je 2f
+
+    /* %r9 = input[i] */
+    mov (%rdi,%rax,8), %r9
+
+    test %r9, %r9
+    jz 3f
+
+    /* %r10 = (input[i] < limit) && (input[i] >= *max) */
+    cmp %rdx, %r9
+    setb %r10b
+    cmp %r9, %rcx
+    setbe %r11b
+    and %r11b, %r10b
+
+    /* *max = r10 ? input[i] : *max */
+    cmovne %r9, %rcx
+    /* *max_idx = r10 ? i : *max_idx */
+    cmovne %rax, %r8
+3:
+    inc %rax
+    jmp 1b
+
+2:
+    pop %r11
+    movq %r8, (%r11)
+    pop %r11
+    movq %rcx, (%r11)
+    ret
+    .cfi_endproc
+
+/*
+ * extern "C" 
+ * void ct_select_pws(
+ *     uint64_t pam[],      -> RDI
+ *     size_t pam_len,      -> RSI
+ *     uint64_t pws[],      -> RDX -> %r14
+ *     size_t pws_len,      -> RCX -> %r15
+ */
+DECLARE_LOCAL_FUNC ct_select_pws_asm
+    push %rbx
+    push %r13
+    push %r14
+    movq %rdx, %r14
+    push %r15
+    movq %rcx, %r15
+
+    /* %rdx = limit = -1 */
+    movq $-1, %rdx
+
+    /* %rbx = j = 0 */
+    xor %rbx, %rbx
+4:
+    cmp %rbx, %r15
+    je 5f
+
+    /* %r8 = pws + j */
+    lea (%r14,%rbx,8), %r8
+
+    /* ------------------------------------ *
+     *     uint64_t input[],        -> RDI  *
+     *     size_t input_len,        -> RSI  *
+     *     uint64_t limit,          -> RDX  *
+     *     uint64_t *max (= &limit),-> RCX  *
+     *     size_t *max_idx);        -> R8   *
+     * ------------------------------------ */
+
+    /* %rcx = max = 0 */
+    xor %rcx, %rcx
+
+    /* %r13 = max_idx = 0 */
+    movq (%r8), %r13
+    movq $0, %r13
+    xor %rax, %rax
+1:
+    cmp %rax, %rsi
+    je 2f
+
+    /* %r9 = input[i] */
+    mov (%rdi,%rax,8), %r9
+
+    test %r9, %r9
+    jz 3f
+
+    /* %r10 = (input[i] < limit) && (input[i] >= *max) */
+    cmp %rdx, %r9
+    setb %r10b
+    cmp %r9, %rcx
+    setbe %r11b
+    and %r11b, %r10b
+
+    /* *max = r10 ? input[i] : *max */
+    cmovne %r9, %rcx
+    /* *max_idx = r10 ? i : *max_idx */
+    cmovne %rax, %r13
+3:
+    inc %rax
+    jmp 1b
+
+2:
+    movq %r13, (%r8)
+
+    /* limit = max */
+    movq %rcx, %rdx
+
+
+    /* ---------------------------- */
+
+    inc %rbx
+    jmp 4b
+
+5:  
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %rbx
+    ret
+    .cfi_endproc
+
+/*
  * -------------------------------------------------------------------------
  *  extern "C"
  *  void constant_time_apply_sgxstep_mitigation_and_continue_execution(
@@ -328,7 +466,7 @@ __ct_mitigation_begin:
     call    *%rdi
 
 # prefetch TLBlur _writable_ entries
-    mov g_vtlb_w_size(%rip), %rcx
+    mov g_tlblur_pws_w_size(%rip), %rcx
 .ct_prefetch_tlblur_w:
     jrcxz   .ct_prefetch_tlblur_x
     lea     g_tlblur_prefetch_w(%rip), %rdi
@@ -341,7 +479,7 @@ __ct_mitigation_begin:
 # prefetch TLBlur _executable_ entries
 .ct_prefetch_tlblur_x:
     lea     g_tlblur_prefetch_x(%rip), %rdi
-    mov     g_vtlb_x_size(%rip), %rcx
+    mov     g_tlblur_pws_x_size(%rip), %rcx
 .ct_prefetch_tlblur_x_loop:
     jrcxz   .ct_prefetch_tlblur_r
     mov     -8(%rdi, %rcx, 8), %rax     # include first elem and stay in bounds
@@ -352,7 +490,7 @@ __ct_mitigation_begin:
 # prefetch TLBlur _readable_ entries
 .ct_prefetch_tlblur_r:
     lea     g_tlblur_prefetch_r(%rip), %rdi
-    mov     g_vtlb_size(%rip), %rcx
+    mov     g_tlblur_pws_size(%rip), %rcx
 .ct_prefetch_tlblur_r_loop:
     jrcxz   .ct_clear_low_bits_of_rdx
     mov     -8(%rdi, %rcx, 8), %rax     # include first elem and stay in bounds
