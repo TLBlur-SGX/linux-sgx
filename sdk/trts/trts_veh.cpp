@@ -657,8 +657,6 @@ extern "C" __attribute__((regparm(1))) void internal_handle_exception(sgx_except
     uintptr_t xsp = 0;
     uint8_t *xsave_in_ssa = (uint8_t*)ROUND_TO_PAGE(thread_data->first_ssa_gpr) - ROUND_TO_PAGE(get_xsave_size() + sizeof(ssa_gpr_t));
 
-    tlblur_dbg_str("internal_handle_exception\n");
-
     // AEX Notify allows this handler to handle interrupts
     if (info == NULL) {
         goto failed_end;
