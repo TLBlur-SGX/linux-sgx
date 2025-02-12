@@ -212,7 +212,7 @@ static inline uint64_t cselect64(uint64_t pred, const uint64_t expected, uint64_
     return new_val;
 }
 
-#define TLBLUR_BENCHMARK
+// #define TLBLUR_BENCHMARK
 
 // #define TLBLUR_DBG
 #ifdef TLBLUR_DBG
@@ -227,16 +227,16 @@ static inline uint64_t cselect64(uint64_t pred, const uint64_t expected, uint64_
 #endif
 
 // TLBlur global variables
-#define MAX_VTLB_SIZE 4096
+#define MAX_PWS_SIZE 4096
 bool g_tlblur_enabled = false;
 uint64_t g_tlblur_pws_size = 0, 
     g_tlblur_pws_r_size = 0, 
     g_tlblur_pws_x_size = 0, 
     g_tlblur_pws_w_size = 0;
-uint64_t g_tlblur_prefetch_buffer[MAX_VTLB_SIZE] = {0};
-uint64_t g_tlblur_prefetch_r[MAX_VTLB_SIZE] = {0};
-uint64_t g_tlblur_prefetch_w[MAX_VTLB_SIZE] = {0};
-uint64_t g_tlblur_prefetch_x[MAX_VTLB_SIZE] = {0};
+uint64_t g_tlblur_prefetch_buffer[MAX_PWS_SIZE] = {0};
+uint64_t g_tlblur_prefetch_r[MAX_PWS_SIZE] = {0};
+uint64_t g_tlblur_prefetch_w[MAX_PWS_SIZE] = {0};
+uint64_t g_tlblur_prefetch_x[MAX_PWS_SIZE] = {0};
 extern "C" uint64_t *timings __attribute__((weak));
 
 #define TLBLUR
@@ -260,27 +260,26 @@ extern char _sro;
 
 
 // defined in libtlblur
-#define SHADOW_PT_SIZE 0x100000
-uint64_t g_tlblur_pam_size = SHADOW_PT_SIZE;
-extern "C" uint64_t __tlblur_shadow_pt[SHADOW_PT_SIZE] __attribute__((weak));
-extern "C" uint64_t __tlblur_global_counter __attribute__((weak));
-extern "C" uint64_t __tlblur_global_counter_backup __attribute__((weak));
-extern "C" void tlblur_tlb_update(void) __attribute__((weak));
+#define PAM_SIZE 0x100000
+uint64_t g_tlblur_pam_size = PAM_SIZE;
+extern "C" uint64_t __tlblur_pam[PAM_SIZE] __attribute__((weak));
+extern "C" uint64_t __tlblur_counter __attribute__((weak));
+extern "C" void tlblur_pam_update(void) __attribute__((weak));
 
-sgx_status_t tlblur_enable(uint64_t vtlb_size) {
+sgx_status_t tlblur_enable(uint64_t pws_size) {
   tlblur_dbg_str("[tlblur] enabling prefetcher...\n");
-  if (vtlb_size > MAX_VTLB_SIZE)
+  if (pws_size > MAX_PWS_SIZE)
     return SGX_ERROR_UNEXPECTED;
-  g_tlblur_pws_size = vtlb_size;
+  g_tlblur_pws_size = pws_size;
   uint64_t enclave_size = get_enclave_size() / 0x1000;
-  if (enclave_size < SHADOW_PT_SIZE)
+  if (enclave_size < PAM_SIZE)
     g_tlblur_pam_size = enclave_size;
   if (g_tlblur_pws_size > g_tlblur_pam_size)
     g_tlblur_pws_size = g_tlblur_pam_size;
   g_tlblur_enabled = true;
   tlblur_dbg_str("[tlblur] enabled:\n");
   tlblur_dbg_int("\t -> |enclave|\t = %d\n", enclave_size);
-  tlblur_dbg_int("\t -> size limit\t = %d\n", SHADOW_PT_SIZE);
+  tlblur_dbg_int("\t -> size limit\t = %d\n", PAM_SIZE);
   tlblur_dbg_int("\t -> |PAM|\t = %d\n", g_tlblur_pam_size);
   tlblur_dbg_int("\t -> |PWS|\t = %d\n", g_tlblur_pws_size);
   return SGX_SUCCESS;
@@ -518,12 +517,14 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
 
         // ct_sort_a(__tlblur_shadow_pt, g_tlblur_prefetch_r, g_tlblur_pam_size, g_tlblur_pws_size);
         #ifdef TLBLUR_BENCHMARK
-        timings[0] = rdtsc_begin();
+        if (timings)
+            timings[0] = rdtsc_begin();
         #endif
-        ct_select_pws(__tlblur_shadow_pt, g_tlblur_pam_size, g_tlblur_prefetch_buffer, g_tlblur_pws_size);
+        ct_select_pws(__tlblur_pam, g_tlblur_pam_size, g_tlblur_prefetch_buffer, g_tlblur_pws_size);
         ct_sort(g_tlblur_prefetch_buffer, g_tlblur_prefetch_r, g_tlblur_pws_size, g_tlblur_pws_size);
         #ifdef TLBLUR_BENCHMARK
-        timings[1] = rdtsc_end();
+        if (timings)
+            timings[1] = rdtsc_end();
         #endif
 
         tlblur_dbg_int("_srx1: %p\n", (uint64_t) &_srx1 - (uint64_t)&__ImageBase);
@@ -536,18 +537,16 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
          * NOTE: we save this in a global array and not on the reserved area on
          * the stack, so in case the mitigation gets interrupted, this code
          * will be re-executed. But this is not a problem since the global
-         * __tlblur_shadow_pt will remain unchanged (only perhaps the accesses
+         * __tlblur_pam will remain unchanged (only perhaps the accesses
          * from the exception handler itself will be incremented, but these
          * should be prefetched anyway..)
          */
-
-        // tlblur_dbg_int("global counter : %lu\n", __tlblur_global_counter_backup);
         
         tlblur_dbg_str("\treadable pages  : ");
         for (size_t i = 0; i < g_tlblur_pws_size; ++i)
         {
             uint64_t p = g_tlblur_prefetch_r[i];
-            tlblur_dbg_int("%lu:", __tlblur_shadow_pt[p]);
+            tlblur_dbg_int("%lu:", __tlblur_pam[p]);
             if (p == 0) {
                 g_tlblur_prefetch_r[i] = (uint64_t)c3_byte_address;
             } else {
@@ -588,14 +587,14 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         // Prefetch PAM pages
         tlblur_dbg_str("\tPAM pages  : ");
         for (size_t i = 0; i < g_tlblur_pam_size; i += 0x1000) {
-            uint64_t p = (uint64_t)&__tlblur_shadow_pt + i;
+            uint64_t p = (uint64_t)&__tlblur_pam + i;
             g_tlblur_prefetch_r[g_tlblur_pws_r_size++] = p;
             g_tlblur_prefetch_w[g_tlblur_pws_w_size++] = p;
             tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
         }
 
         {
-            uint64_t p = (uint64_t)&__tlblur_global_counter;
+            uint64_t p = (uint64_t)&__tlblur_counter;
             g_tlblur_prefetch_r[g_tlblur_pws_r_size++] = p;
             g_tlblur_prefetch_w[g_tlblur_pws_w_size++] = p;
             tlblur_dbg_int("%p ", p - ((uint64_t) get_enclave_base()));
@@ -605,7 +604,7 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
         // Prefetch PAM update code
         tlblur_dbg_str("\tPAM code page  : ");
         {
-            uint64_t p = (uint64_t)tlblur_tlb_update;
+            uint64_t p = (uint64_t)tlblur_pam_update;
             tlblur_dbg_int("%p -> ", p);
             if (p != NULL) {
                 p = c3_cache_lookup(p);
@@ -634,7 +633,8 @@ static void apply_constant_time_sgxstep_mitigation_and_continue_execution(sgx_ex
     // 3. Bit 4 of `code_tickle_page` is 1 if the cycle delay
     //    should be added to the mitigation
     #ifdef TLBLUR_BENCHMARK
-    timings[2] = rdtsc_begin();
+    if (timings)
+        timings[2] = rdtsc_begin();
     #endif
     constant_time_apply_sgxstep_mitigation_and_continue_execution(
                     info, thread_data->first_ssa_gpr + offsetof(ssa_gpr_t, aex_notify),
